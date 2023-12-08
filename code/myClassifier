@@ -1,0 +1,239 @@
+'''
+
+IMPORTANT:
+
+Calling this file with this command on my PC:
+
+& "C:/Program Files/Python38/python.exe" c:/Master/MLCV/mathRecognition/Master-MathProject-master/code/myClassifier
+
+Just make sure the datasets are in the correct folders!
+
+'''
+
+
+import numpy as np
+from glob import glob
+import xml.etree.ElementTree as ET
+import time
+import copy
+import torch
+import torchvision
+import torchvision.transforms as transforms
+from skimage.io import imread, imsave
+import convertInkmlToImg
+import segmenter
+import segmentSelect
+import os
+import matplotlib.pyplot as plt
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+from torch.autograd import Variable
+from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, Module, Softmax, BatchNorm2d, Dropout
+from torch.optim import Adam, SGD
+import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image
+import numpy as np
+import torch.optim as optim
+
+namespace = "{http://www.w3.org/2003/InkML}"
+
+inkFiles = glob('./Master-MathProject-master/data/TrainINKML/TrainINKML/**/*.inkml', recursive = True)
+
+def getHypothesesSymbol(ink_file_path):
+    tree = ET.parse(ink_file_path)
+    #get document root
+    root = tree.getroot()
+    #get traceGroup element
+    trace_group = root.find(namespace + 'traceGroup')
+    #get traceGroup elements inside traceGroup element
+    trace_groups = trace_group.findall(namespace + 'traceGroup')
+    for group in trace_groups:
+        #get traceView element inside of traceGroup elements
+        traceViews = group.findall(namespace + 'traceView')
+        #get the hypotheses (correct trace numbers)
+        hyp = [int(view.get('traceDataRef')) for view in traceViews]
+        annotation = group.find(namespace + 'annotation')
+        symbol = annotation.text
+        #hypothesis and the symbol that is in it (got from the .text property of the annotation element)
+        yield hyp, symbol
+
+#all possible characters, mapped to numbers (indexes)
+label_mapping = {label: idx for idx, label in enumerate(['!', '(', ')', '+', ',', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '=', 'a', 'alpha', 'A_', 'b', 'beta', 'B_', 'c', 'cos', 'C_', 'd', 'Delta', 'div', 'div_op', 'dot', 'e', 'exists', 'E_', 'f', 'forall', 'F_', 'g', 'gamma', 'geq', 'gt', 'G_', 'h', 'H_', 'i', 'in', 'infty', 'int', 'I_', 'j', 'k', 'l', 'lambda', 'ldots', 'leq', 'lim', 'log', 'lt', 'L_', 'm', 'mu', 'M_', 'n', 'neq', 'N_', 'o', 'p', 'phi', 'pi', 'pipe', 'pm', 'prime', 'P_', 'q', 'r', 'rightarrow', 'R_', 's', 'sigma', 'sin', 'sqrt', 'sum', 'S_', 't', 'tan', 'theta', 'times', 'T_', 'u', 'v', 'V_', 'w', 'x', 'X_', 'y', 'Y_', 'z', '[', ']', '{', '}'])}
+
+index_to_label = {idx: label.replace('\\', '') for idx, label in enumerate(['!', '(', ')', '+', ',', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '=', 'a', 'alpha', 'A_', 'b', 'beta', 'B_', 'c', 'cos', 'C_', 'd', 'Delta', 'div', 'div_op', 'dot', 'e', 'exists', 'E_', 'f', 'forall', 'F_', 'g', 'gamma', 'geq', 'gt', 'G_', 'h', 'H_', 'i', 'in', 'infty', 'int', 'I_', 'j', 'k', 'l', 'lambda', 'ldots', 'leq', 'lim', 'log', 'lt', 'L_', 'm', 'mu', 'M_', 'n', 'neq', 'N_', 'o', 'p', 'phi', 'pi', 'pipe', 'pm', 'prime', 'P_', 'q', 'r', 'rightarrow', 'R_', 's', 'sigma', 'sin', 'sqrt', 'sum', 'S_', 't', 'tan', 'theta', 'times', 'T_', 'u', 'v', 'V_', 'w', 'x', 'X_', 'y', 'Y_', 'z', '[', ']', '{', '}'])}
+
+def prepareDataset(ink_files):
+    for ink_file in ink_files:
+        traces = convertInkmlToImg.parse_inkml(ink_file)
+        if traces is None:
+            continue
+        trace_groups_truth = getHypothesesSymbol(ink_file)
+        for hyp, symbol in trace_groups_truth:
+            hyp = [str(i) for i in hyp]
+            img = convertInkmlToImg.convert_to_imgs(convertInkmlToImg.get_traces_data(traces, hyp), 32) / 255
+            img = torch.tensor([img.tolist()])
+            try:
+                numerical_label = label_mapping[symbol.replace('\\', '')]
+                yield img, numerical_label
+            except KeyError:
+                continue
+
+#prepare and get the dataset for training
+a = list(prepareDataset(inkFiles))
+
+datasetSize = len(a)
+trainSize = datasetSize * 3  // 4
+remaining_size = datasetSize - trainSize
+
+# Split the remaining part into validation and test sets
+validationSize = remaining_size // 2
+testSize = remaining_size - validationSize
+#size of the mini batch
+minibatchsize = 32
+
+
+#split the full train part as train and validation (10K samples, some can be ignored):
+trainset, validationset, testSet = torch.utils.data.random_split(a, [trainSize,validationSize,testSize])
+
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=minibatchsize,
+                                          shuffle=True, num_workers=0)
+
+validationloader = torch.utils.data.DataLoader(validationset, batch_size=minibatchsize,
+                                          shuffle=False, num_workers=0)
+
+testLoader = torch.utils.data.DataLoader(testSet, batch_size=minibatchsize,
+                                          shuffle=False, num_workers=0)
+
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# this class define the CNN architecture
+# default architecture is close to LeNet5 one
+class NetCNN(nn.Module):
+    def __init__(self):
+        super(NetCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 6, 5)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 101)  # Change the number of output neurons to 101
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(-1, 16 * 5 * 5)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+       
+        return x
+
+
+net = NetCNN()
+net.to(device) # move it to GPU or CPU
+
+#lossCriterion and optimizer defined
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+
+
+val_err_array = np.array([])
+train_err_array = np.array([])
+nb_sample_array = np.array([])
+
+# best system results
+best_val_loss = 1000000
+best_epoch = 0
+best_model =  copy.deepcopy(net)
+
+nb_used_sample = 0
+running_loss = 0.0
+num_epochs = 10
+print_every = 200
+
+for epoch in range(num_epochs):
+    start_time = time.time()
+
+    for i, data in enumerate(trainloader, 0):
+        inputs, labels = data
+
+        inputs, labels = inputs.to(device), labels.to(device)  
+
+        optimizer.zero_grad()
+        outputs = net(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        nb_used_sample += minibatchsize
+        running_loss += loss.item()
+
+        if nb_used_sample % (print_every * minibatchsize) == 0:
+            train_err = (running_loss / (print_every * minibatchsize))
+            print('Epoch %d batch %5d ' % (epoch + 1, i + 1))
+            print('Train loss : %.3f' % train_err)
+            running_loss = 0.0
+
+            total_val_loss = 0.0
+            with torch.no_grad():
+                for data in validationloader:
+                    images, labels = data
+                    try:
+                        images, labels = images.to(device), labels.to(device)
+                    except KeyError:
+                        continue
+                    outputs = net(images)
+                    loss = criterion(outputs, labels.to(torch.int64))
+                    total_val_loss += loss.item()
+
+            val_err = (total_val_loss / len(validationset))
+            print('Validation loss mean : %.3f' % val_err)
+
+            train_err_array = np.append(train_err_array, train_err)
+            val_err_array = np.append(val_err_array, val_err)
+            nb_sample_array = np.append(nb_sample_array, nb_used_sample)
+
+            if val_err < best_val_loss:
+                best_val_loss = val_err
+                best_epoch = epoch + 1
+                best_nb_sample = nb_used_sample
+
+            best_model = copy.deepcopy(net)
+
+    print("Epoch {} of {} took {:.3f}s".format(epoch + 1, num_epochs, time.time() - start_time))
+
+print('Finished Training')
+
+
+plt.clf()
+plt.xlabel('epoch')
+plt.ylabel('val / train LOSS')
+plt.title('Symbol classifier')
+green_point_index = np.where(nb_sample_array == best_nb_sample)[0][0]
+plt.plot(nb_sample_array.tolist(), val_err_array.tolist(), 'b', nb_sample_array.tolist(), train_err_array.tolist(), 'r', [nb_sample_array[green_point_index]], [val_err_array[green_point_index]], 'go', label=f'Min Validation Loss (Epoch {best_epoch})')
+
+#save the LOSS in the classifierLoss png file
+plt.savefig('./Master-MathProject-master/code/classifierLoss.png')
+
+
+#save the model
+torch.save(best_model, "./Master-MathProject-master/code/models/bestClassifier.nn")
+
+#test on the whole testDataset
+correct = 0
+total = 0
+with torch.no_grad():
+    for data in testLoader:
+        images, labels = data
+        images, labels = images.to(device), labels.to(device)
+        outputs = best_model(images.to(device))
+        total += labels.size(0)
+        correct += torch.sum(torch.eq(torch.argmax(outputs, 1), labels.to(device))).item()
+
+
+print('Accuracy of the network on the test images: %d %%' % (
+    100 * correct / total))
+

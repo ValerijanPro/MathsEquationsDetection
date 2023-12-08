@@ -1,0 +1,74 @@
+import numpy as np
+from glob import glob
+import xml.etree.ElementTree as ET
+import time
+import copy
+import torch
+import torchvision
+import torchvision.transforms as transforms
+from skimage.io import imread, imsave
+import convertInkmlToImg
+import segmenter
+import segmentSelect
+
+namespace = "{http://www.w3.org/2003/InkML}"
+
+
+#segmenter:
+#array of all hypothesis -> create image from hypothesis
+#1 or 0, depending whether the hypothesis is inside the correct traceGroup, ali kao tenzor
+
+#output -> outputs correct hypothesis from 1 or 0 for a given image of a hypothesis
+
+#recognizer:
+#image of character, created from CORRECT hypotheses, which was created from getting the traceGroup trace indexes, converter to tensor
+#label: character from traceGroup/annotation
+#npr: [0,1], '\phi' 
+#     [2], '('
+#     [3], 'x'
+#     [4], ')'
+#output -> outputs a character text
+
+
+
+#layout analysis
+
+def getHypSymbol(inkFilePath):
+    print(inkFilePath)
+    tree = ET.parse(inkFilePath)
+    root = tree.getroot()
+    print(root)
+    print(root.find(namespace + 'traceGroup'))
+    traceGroups = root.find(namespace + 'traceGroup').findall(namespace + 'traceGroup')
+    for group in traceGroups:
+        print("**")
+        hyp = [int(view.get('traceDataRef')) for view in group.findall(namespace + 'traceView')]
+        symbol = group.find(namespace + 'annotation').text
+        yield hyp,symbol
+
+def getDataForClassifier(inkFiles):
+    for inkFile in inkFiles:
+        #we get dictionary: {traceID : tuples of coordinates}
+        traces = convertInkmlToImg.parse_inkml(inkFile);
+        #print(traces)
+
+        if(traces is None): 
+            continue
+        hyplist = segmenter.generateHypSeg(len(traces))
+        trace_groups_truth = getHypSymbol(inkFile)
+
+        for hyp, symbol in trace_groups_truth:
+
+            hyp = [str(i) for i in hyp]
+            img = convertInkmlToImg.convert_to_imgs(convertInkmlToImg.get_traces_data(traces, hyp), 32) / 255
+            img = torch.tensor([img.tolist()])
+
+            yield img, symbol
+#inkFiles = glob('./Master-MathProject-master/data/TrainINKML/TrainINKML/**/*.inkml', recursive = True)
+inkFiles = glob('C:/Master/MLCV/mathRecognition/Master-MathProject-master/data/formulaire001-equation001.inkml')
+#inkFiles = inkFiles[:10]
+
+print(len(inkFiles))
+a = list(getDataForClassifier(inkFiles))
+
+print(a)
